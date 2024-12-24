@@ -7,6 +7,9 @@ use hex_literal::hex;
 use hmac::{Hmac, Mac};
 use ripemd::Ripemd160;
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
+use serde_json::Value;
+use std::{path::PathBuf, process::Command};
+
 
 #[derive(Clone)]
 struct ExKey {
@@ -25,6 +28,15 @@ pub struct WalletState {
     pub public_keys: Vec<Vec<u8>>,
     pub private_keys: Vec<Vec<u8>>,
 }
+
+impl WalletState {
+    // Given a WalletState find the balance is satoshis
+    pub fn balance(&self) -> f64 {
+        self.utxos.values().map(|(_, value)| value).sum()
+    }
+}
+
+
 #[derive(Debug)]
 pub enum BalanceError {
     MissingCodeCantRun,
@@ -32,6 +44,16 @@ pub enum BalanceError {
     InvalidBase58Character,
     ParseError(String),
 }
+
+#[derive(Debug)]
+struct ScanInputs {
+    cpublic_keys: HashMap<String, bool>,
+    cwitness_programs: HashMap<String, bool>,
+    outgoing_txs: Vec<Vec<u8>>,
+    spending_txs: Vec<Vec<u8>>,
+    utxos: HashMap<(String, u32), (Vec<u8>, f64)>,
+}
+
 
 fn base58_decode(base58_string: &str) -> Vec<u8> {
     let base58_alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
@@ -202,6 +224,120 @@ fn get_p2wpkh_program(pubkey: &[u8]) -> Vec<u8> {
     witness_program
 }
 
+pub fn bcli(cmd: &str) -> Result<Vec<u8>, BalanceError> {
+    let mut args = vec!["-signet"];
+    args.extend(cmd.split(' '));
+
+    let result = Command::new("bitcoin-cli")
+        .args(&args)
+        .output()
+        .map_err(|_| BalanceError::MissingCodeCantRun)?;
+
+    if result.status.success() {
+        return Ok(result.stdout);
+    } else {
+        return Ok(result.stderr);
+    }
+}
+
+fn fetch_block(block_number: u32) -> Result<Value, BalanceError> {
+    let block_hash_cmd = format!("-signet getblockhash {}", block_number);
+    let block_hash = match bcli(&block_hash_cmd) {
+        Ok(hash) => String::from_utf8_lossy(&hash).trim().to_string(),
+        Err(e) => return Err(e),
+    };
+
+    let block_cmd = format!("-signet getblock {} 2", block_hash);
+    let block_data = match bcli(&block_cmd) {
+        Ok(data) => data,
+        Err(e) => return Err(e),
+    };
+
+    //return it as serde_json::Value
+    serde_json::from_slice(&block_data).map_err(|e| BalanceError::ParseError(e.to_string()))
+}
+
+fn parse_block_transactions(block_json: &Value, scan_inputs: &mut ScanInputs) -> Result<(), BalanceError> {
+    let transactions = block_json["tx"]
+        .as_array()
+        .ok_or_else(|| BalanceError::ParseError("No transactions found in block".to_string()))?;
+
+
+    for tx in transactions {
+        parse_transaction(tx, scan_inputs)?;
+    }
+
+    Ok(())
+}
+
+fn parse_transaction(tx: &Value, scan_inputs: &mut ScanInputs) -> Result<(), BalanceError>{
+    let txid = tx["txid"]
+        .as_str()
+        .ok_or_else(|| BalanceError::ParseError("Missing txid".to_string()))?
+        .to_string();
+
+
+    let inputs = tx["vin"]
+    .as_array()
+    .ok_or_else(|| BalanceError::ParseError("Missing vin".to_string()))?;
+
+    let outputs = tx["vout"]
+    .as_array()
+    .ok_or_else(|| BalanceError::ParseError("Missing vout".to_string()))?;
+
+    for input in inputs {
+        if let Some(witness_array) = input["txinwitness"].as_array() {
+            if let Some(pubkey) = witness_array.last() {
+                if let Some(pubkey_str) = pubkey.as_str() {
+                    if scan_inputs.cpublic_keys.contains_key(pubkey_str) {
+                        scan_inputs.spending_txs.push(hex::decode(&txid).unwrap());
+                    }
+                }
+            }
+    
+            if let (Some(prev_txid), Some(prev_vout)) = (input["txid"].as_str(), input["vout"].as_u64()) {
+                let outpoint_key = (prev_txid.to_string(), prev_vout as u32);
+                scan_inputs.utxos.remove(&outpoint_key);
+            }
+        }
+    }
+    
+
+    for (vout, output) in outputs.iter().enumerate() {
+        if let Some(script_pub_key) = output["scriptPubKey"]["hex"].as_str() {
+            if scan_inputs.cwitness_programs.contains_key(script_pub_key) {
+                // This output is paying to our address
+                let value = (output["value"].as_f64()); // Convert BTC to satoshis
+                let outpoint_key = (txid.clone(), vout as u32);
+                scan_inputs.utxos.insert(outpoint_key, (hex::decode(script_pub_key).unwrap(), value.unwrap()));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn scan_blockchain(scan_inputs: &mut ScanInputs) -> Result<(), BalanceError> {
+    let mut signet_block_count = bcli("-signet getblockcount")?;
+
+    let signet_block_count = String::from_utf8_lossy(&signet_block_count)
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| BalanceError::ParseError("Invalid block count".to_string()))?;
+
+    let end_index = if signet_block_count > 300 {
+        300
+    } else {
+        signet_block_count
+    };
+    
+    for height in 0..=end_index {
+        let block_data = fetch_block(height)?;
+        parse_block_transactions(&block_data, scan_inputs)?;
+    }
+    
+    Ok(())
+}
 
 
 pub fn recover_wallet_state(
@@ -242,10 +378,25 @@ pub fn recover_wallet_state(
         witness_programs.push(witness_program.to_vec());
     }
 
+    let mut outgoing_txs: Vec<Vec<u8>> = vec![];
+    let mut spending_txs: Vec<Vec<u8>> = vec![];
+    let mut utxos: HashMap<(String, u32), (Vec<u8>, f64)> = HashMap::new();
+
+    let mut scan_inputs = ScanInputs {
+        cpublic_keys: cpublic_keys.clone(),
+        cwitness_programs: cwitness_programs.clone(),
+        outgoing_txs: outgoing_txs,
+        spending_txs: spending_txs,
+        utxos: utxos.clone(),
+    };
+
+    // Scan blocks 0 to 300 for transactions
+    scan_blockchain(&mut scan_inputs)?;
+
     Ok(WalletState {
-        utxos: HashMap::new(),
-        witness_programs: Vec::new(),
-        public_keys: Vec::new(),
-        private_keys: Vec::new(),
+        utxos: scan_inputs.utxos.clone(),
+        public_keys,
+        private_keys,
+        witness_programs,
     })
 }

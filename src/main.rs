@@ -9,8 +9,13 @@ fn main() {
     dotenv().ok();
 
     let extended_private_key =
-        env::var("extended_private_key").expect("extended private key url must be set");
+        env::var("EXTENDED_PRIVATE_KEY").expect("extended private key url must be set");
+        let wallet_name =
+        env::var("WALLET_NAME").expect("extended private key url must be set");
 
     let wallet_state =
         recover_wallet_state(extended_private_key.as_str(), cookie_filepath).unwrap();
+        let balance = wallet_state.balance();
+
+        println!("{} {:.8}", wallet_name, balance);
 }
