@@ -1,15 +1,14 @@
 #![allow(unused)]
-use num_bigint::{BigInt, BigUint};
-use num_traits::Zero;
-use sha2::{Digest, Sha256, Sha512};
-use std::collections::HashMap;
 use hex_literal::hex;
 use hmac::{Hmac, Mac};
+use num_bigint::{BigInt, BigUint};
+use num_traits::Zero;
 use ripemd::Ripemd160;
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use serde_json::Value;
+use sha2::{Digest, Sha256, Sha512};
+use std::collections::HashMap;
 use std::{path::PathBuf, process::Command};
-
 
 #[derive(Clone)]
 struct ExKey {
@@ -36,7 +35,6 @@ impl WalletState {
     }
 }
 
-
 #[derive(Debug)]
 pub enum BalanceError {
     MissingCodeCantRun,
@@ -53,7 +51,6 @@ struct ScanInputs {
     spending_txs: Vec<Vec<u8>>,
     utxos: HashMap<(String, u32), (Vec<u8>, f64)>,
 }
-
 
 fn base58_decode(base58_string: &str) -> Vec<u8> {
     let base58_alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
@@ -150,7 +147,7 @@ fn derive_priv_child(key: ExKey, child_num: u32) -> ExKey {
     let ir = &result[32..]; //used as child chain code
 
     let mut child_key = [0u8; 32];
-    
+
     let sum = (BigUint::from_bytes_be(&key.key) + BigUint::from_bytes_be(&il)) % &big_n;
     let mut sum_bytes = sum.to_bytes_be();
     while sum_bytes.len() < 32 {
@@ -257,11 +254,13 @@ fn fetch_block(block_number: u32) -> Result<Value, BalanceError> {
     serde_json::from_slice(&block_data).map_err(|e| BalanceError::ParseError(e.to_string()))
 }
 
-fn parse_block_transactions(block_json: &Value, scan_inputs: &mut ScanInputs) -> Result<(), BalanceError> {
+fn parse_block_transactions(
+    block_json: &Value,
+    scan_inputs: &mut ScanInputs,
+) -> Result<(), BalanceError> {
     let transactions = block_json["tx"]
         .as_array()
         .ok_or_else(|| BalanceError::ParseError("No transactions found in block".to_string()))?;
-
 
     for tx in transactions {
         parse_transaction(tx, scan_inputs)?;
@@ -270,20 +269,19 @@ fn parse_block_transactions(block_json: &Value, scan_inputs: &mut ScanInputs) ->
     Ok(())
 }
 
-fn parse_transaction(tx: &Value, scan_inputs: &mut ScanInputs) -> Result<(), BalanceError>{
+fn parse_transaction(tx: &Value, scan_inputs: &mut ScanInputs) -> Result<(), BalanceError> {
     let txid = tx["txid"]
         .as_str()
         .ok_or_else(|| BalanceError::ParseError("Missing txid".to_string()))?
         .to_string();
 
-
     let inputs = tx["vin"]
-    .as_array()
-    .ok_or_else(|| BalanceError::ParseError("Missing vin".to_string()))?;
+        .as_array()
+        .ok_or_else(|| BalanceError::ParseError("Missing vin".to_string()))?;
 
     let outputs = tx["vout"]
-    .as_array()
-    .ok_or_else(|| BalanceError::ParseError("Missing vout".to_string()))?;
+        .as_array()
+        .ok_or_else(|| BalanceError::ParseError("Missing vout".to_string()))?;
 
     for input in inputs {
         if let Some(witness_array) = input["txinwitness"].as_array() {
@@ -294,14 +292,15 @@ fn parse_transaction(tx: &Value, scan_inputs: &mut ScanInputs) -> Result<(), Bal
                     }
                 }
             }
-    
-            if let (Some(prev_txid), Some(prev_vout)) = (input["txid"].as_str(), input["vout"].as_u64()) {
+
+            if let (Some(prev_txid), Some(prev_vout)) =
+                (input["txid"].as_str(), input["vout"].as_u64())
+            {
                 let outpoint_key = (prev_txid.to_string(), prev_vout as u32);
                 scan_inputs.utxos.remove(&outpoint_key);
             }
         }
     }
-    
 
     for (vout, output) in outputs.iter().enumerate() {
         if let Some(script_pub_key) = output["scriptPubKey"]["hex"].as_str() {
@@ -309,7 +308,10 @@ fn parse_transaction(tx: &Value, scan_inputs: &mut ScanInputs) -> Result<(), Bal
                 // This output is paying to our address
                 let value = (output["value"].as_f64()); // Convert BTC to satoshis
                 let outpoint_key = (txid.clone(), vout as u32);
-                scan_inputs.utxos.insert(outpoint_key, (hex::decode(script_pub_key).unwrap(), value.unwrap()));
+                scan_inputs.utxos.insert(
+                    outpoint_key,
+                    (hex::decode(script_pub_key).unwrap(), value.unwrap()),
+                );
             }
         }
     }
@@ -330,15 +332,14 @@ fn scan_blockchain(scan_inputs: &mut ScanInputs) -> Result<(), BalanceError> {
     } else {
         signet_block_count
     };
-    
+
     for height in 0..=end_index {
         let block_data = fetch_block(height)?;
         parse_block_transactions(&block_data, scan_inputs)?;
     }
-    
+
     Ok(())
 }
-
 
 pub fn recover_wallet_state(
     extended_private_key: &str,
