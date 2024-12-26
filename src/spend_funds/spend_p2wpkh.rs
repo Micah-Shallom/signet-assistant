@@ -1,7 +1,6 @@
-use sha2::{Digest, Sha256};
-use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
 use crate::balance::balance::WalletState;
-
+use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug)]
 pub enum SpendError {
@@ -10,7 +9,6 @@ pub enum SpendError {
     InsufficientFunds(String),
 }
 
-
 #[derive(Clone)]
 pub struct Utxo {
     pub script_pubkey: Vec<u8>,
@@ -18,14 +16,13 @@ pub struct Utxo {
 }
 
 pub struct Outpoint {
-    txid: [u8; 32],
-    index: u32,
+    pub txid: [u8; 32],
+    pub index: u32,
 }
-
 
 // create a serialized transaction input
 // Use hard-coded defaults for sequence and scriptSig
-fn input_from_utxo(txid: &[u8], index: u32) -> Vec<u8> {
+pub fn input_from_utxo(txid: &[u8], index: u32) -> Vec<u8> {
     let mut input = Vec::new();
     input.extend(txid);
     //add the index as little-endianc
@@ -38,7 +35,7 @@ fn input_from_utxo(txid: &[u8], index: u32) -> Vec<u8> {
 }
 
 // a 2-of-2 multisig output script. No length byte prefix is necessary.
-fn create_multisig_script(keys: Vec<Vec<u8>>) -> Vec<u8> {
+pub fn create_multisig_script(keys: Vec<Vec<u8>>) -> Vec<u8> {
     if keys.len() < 2 {
         panic!("Not enough keys to create multisig script");
     }
@@ -91,8 +88,7 @@ fn get_key_index(utxo: &Utxo, programs: Vec<&str>) -> u32 {
     panic!("key not found for utxo and the witness program")
 }
 
-
-fn output_from_options(script: &[u8], amount: u64) -> Vec<u8> {
+pub fn output_from_options(script: &[u8], amount: u64) -> Vec<u8> {
     let mut output = Vec::new();
     //add amount as little endian bytes
     output.extend(&amount.to_le_bytes());
@@ -126,15 +122,13 @@ fn get_p2wpkh_scriptcode(utxo: &Utxo) -> Vec<u8> {
     script_code
 }
 
-
-
 // this function helps in performing SHA256 double hashing
 fn hash256(data: &[u8]) -> Vec<u8> {
     let first_hash = Sha256::digest(data);
     Sha256::digest(&first_hash).to_vec()
 }
 
-fn get_commitment_hash(
+pub fn get_commitment_hash(
     outpoint: Outpoint,
     scriptcode: &[u8],
     value: u64,
@@ -206,7 +200,7 @@ fn sign(privkey: &[u8; 32], msg: Vec<u8>) -> Vec<u8> {
     der_signature
 }
 
-fn get_txid(inputs: Vec<Vec<u8>>, outputs: Vec<Vec<u8>>) -> [u8; 32] {
+pub fn get_txid(inputs: Vec<Vec<u8>>, outputs: Vec<Vec<u8>>) -> [u8; 32] {
     let mut transaction = Vec::new();
     transaction.extend(&2u32.to_le_bytes());
     transaction.push(inputs.len() as u8);
@@ -226,8 +220,28 @@ fn get_txid(inputs: Vec<Vec<u8>>, outputs: Vec<Vec<u8>>) -> [u8; 32] {
     txid
 }
 
+pub fn get_p2wsh_witness(privs: Vec<&[u8; 32]>, msg: Vec<u8>, redeem_script: &[u8]) -> Vec<u8> {
+    let mut witness = Vec::new();
+    witness.push(0);
+    witness.push(0x00);
+    let mut witness_count = 1;
 
-fn assemble_transaction(
+    for privkey in privs {
+        let der_signature = sign(privkey, msg.clone());
+        witness.push(der_signature.len() as u8);
+        witness.extend(&der_signature);
+        witness_count += 1;
+    }
+
+    witness.push(redeem_script.len() as u8);
+    witness.extend_from_slice(redeem_script);
+    witness_count += 1;
+
+    witness[0] = witness_count as u8;
+    witness
+}
+
+pub fn assemble_transaction(
     inputs: Vec<Vec<u8>>,
     outputs: Vec<Vec<u8>>,
     witnesses: Vec<Vec<u8>>,
@@ -259,7 +273,7 @@ fn assemble_transaction(
     transaction
 }
 
-fn get_p2wpkh_witness(privkey: &[u8; 32], msg: Vec<u8>) -> Vec<u8> {
+pub fn get_p2wpkh_witness(privkey: &[u8; 32], msg: Vec<u8>) -> Vec<u8> {
     let secp = Secp256k1::new();
     let secret_key = SecretKey::from_slice(privkey).expect("32 bytes, within curve order");
     let public_key = PublicKey::from_secret_key(&secp, &secret_key);
@@ -336,7 +350,6 @@ pub fn spend_p2wpkh(wallet_state: &WalletState) -> Result<([u8; 32], String), Sp
         script_pubkey: script_pubkey.clone(),
         amount: utxo_amount_sats,
     };
-
 
     // Compute the scriptcode for the input UTXO (required for signing)
     let input_scriptcode = get_p2wpkh_scriptcode(&input_utxo);
