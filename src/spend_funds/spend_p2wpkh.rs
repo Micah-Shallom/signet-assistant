@@ -58,7 +58,7 @@ fn get_p2wsh_program(script: &[u8], version: Option<u32>) -> Vec<u8> {
 
     match version {
         Some(v) => {
-            program.push((v as u8));
+            program.push(v as u8);
         }
         None => {
             program.push(0x00);

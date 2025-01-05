@@ -4,9 +4,10 @@
 // # for building and analyzing the dependency  #
 // # graph of transactions.                     #
 // ##############################################
-use crate::parser::Transaction;
+
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
+use crate::block_selection::blockparser::Transaction;
 
 #[derive(Debug)]
 struct HeapItem {
